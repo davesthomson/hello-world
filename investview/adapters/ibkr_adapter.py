@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from datetime import datetime
 
@@ -41,6 +42,13 @@ class IBKRAdapter(BrokerAdapter):
     def connect(self) -> bool:
         """Connect to TWS / IB Gateway. Returns True on success."""
         try:
+            # Ensure an asyncio event loop exists in this thread (needed for
+            # Streamlit which runs scripts in threads without a default loop).
+            try:
+                asyncio.get_event_loop()
+            except RuntimeError:
+                asyncio.set_event_loop(asyncio.new_event_loop())
+
             from ib_insync import IB
             self.ib = IB()
             self.ib.connect(self.host, self.port, clientId=self.client_id, timeout=10)
