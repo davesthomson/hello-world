@@ -24,7 +24,17 @@ def init_db(conn: sqlite3.Connection) -> None:
     schema_sql = SCHEMA_PATH.read_text()
     conn.executescript(schema_sql)
     conn.commit()
+    _run_migrations(conn)
     logger.info("Database initialized successfully.")
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Apply schema migrations for existing databases."""
+    # Add exchange column to positions (added for yfinance suffix mapping)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    if "exchange" not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN exchange TEXT")
+        conn.commit()
 
 
 def reset_db(conn: sqlite3.Connection) -> None:
@@ -83,8 +93,9 @@ def upsert_positions(conn: sqlite3.Connection, account_id: int, positions: list[
         conn.execute(
             """INSERT INTO positions
                (account_id, ticker, quantity, avg_cost_basis, current_price,
-                market_value, unrealized_pnl, unrealized_pnl_pct, asset_type, last_updated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                market_value, unrealized_pnl, unrealized_pnl_pct, asset_type,
+                exchange, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
             (
                 account_id,
                 pos["ticker"],
@@ -95,6 +106,7 @@ def upsert_positions(conn: sqlite3.Connection, account_id: int, positions: list[
                 pos.get("unrealized_pnl"),
                 pos.get("unrealized_pnl_pct"),
                 pos.get("asset_type", "stock"),
+                pos.get("exchange"),
             ),
         )
         count += 1
@@ -249,13 +261,28 @@ def is_equity_ticker(ticker: str) -> bool:
     return bool(_TICKER_RE.match(ticker))
 
 
-def yfinance_ticker(ticker: str) -> str:
+# IBKR exchange → yfinance suffix mapping
+_EXCHANGE_SUFFIX: dict[str, str] = {
+    "ASX": ".AX",
+    "TSE": ".TO",
+    "LSE": ".L",
+    "SEHK": ".HK",
+    "SGX": ".SI",
+}
+
+
+def yfinance_ticker(ticker: str, exchange: str | None = None) -> str:
     """Convert an IBKR-style ticker to the yfinance format.
 
-    IBKR uses spaces for class shares (``PBR A``, ``BRK B``) while yfinance
-    expects hyphens (``PBR-A``, ``BRK-B``).
+    - Replaces spaces with hyphens for class shares (``PBR A`` → ``PBR-A``).
+    - Appends exchange suffix for non-US markets (ASX → ``.AX``, TSE → ``.TO``).
     """
-    return ticker.replace(" ", "-")
+    yf_t = ticker.replace(" ", "-")
+    if exchange:
+        suffix = _EXCHANGE_SUFFIX.get(exchange, "")
+        if suffix:
+            yf_t += suffix
+    return yf_t
 
 
 def refresh_position_prices(conn: sqlite3.Connection, account_id: int | None = None) -> int:
@@ -270,26 +297,27 @@ def refresh_position_prices(conn: sqlite3.Connection, account_id: int | None = N
     if not positions:
         return 0
 
-    # Collect unique equity tickers that yfinance can resolve
-    db_tickers = sorted({p["ticker"] for p in positions if is_equity_ticker(p["ticker"])})
-    if not db_tickers:
+    # Collect unique equity tickers and their exchanges
+    equity_positions = [p for p in positions if is_equity_ticker(p["ticker"])]
+    if not equity_positions:
         return 0
 
-    # Map DB ticker → yfinance ticker (spaces → hyphens for class shares)
-    yf_map = {t: yfinance_ticker(t) for t in db_tickers}
-    yf_tickers = list(yf_map.values())
+    # Build mapping: (db_ticker, exchange) → yfinance ticker
+    # A ticker may appear on multiple exchanges; deduplicate by position id
+    yf_map: dict[str, str] = {}  # db_ticker → yf_ticker (per position)
+    pos_yf: dict[int, str] = {}  # position id → yf_ticker
+    for p in equity_positions:
+        yf_t = yfinance_ticker(p["ticker"], p["exchange"])
+        yf_map[p["ticker"]] = yf_t  # last exchange wins for batch, ok
+        pos_yf[p["id"]] = yf_t
 
+    yf_tickers = sorted(set(pos_yf.values()))
     prices = get_multiple_prices(yf_tickers)
 
-    # Build reverse lookup: DB ticker → price
-    db_prices: dict[str, float | None] = {}
-    for db_t, yf_t in yf_map.items():
-        db_prices[db_t] = prices.get(yf_t)
-
     updated = 0
-    for pos in positions:
-        ticker = pos["ticker"]
-        price = db_prices.get(ticker)
+    for pos in equity_positions:
+        yf_t = pos_yf.get(pos["id"])
+        price = prices.get(yf_t) if yf_t else None
         if price is None:
             continue
 

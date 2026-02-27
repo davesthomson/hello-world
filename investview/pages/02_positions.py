@@ -11,6 +11,12 @@ from data.market_data import get_ticker_info, get_price_history
 from utils.formatting import fmt_currency, fmt_pct
 from config import logger
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_ticker_info(ticker: str) -> dict:
+    """Fetch ticker info with 1-hour Streamlit cache to avoid Yahoo rate limits."""
+    return get_ticker_info(ticker)
+
 conn = st.session_state.db_conn
 
 st.title("Positions")
@@ -65,11 +71,17 @@ if not all_positions:
 # ---------------------------------------------------------------------------
 # Build display table
 # ---------------------------------------------------------------------------
-tickers = list({p["ticker"] for p in all_positions})
+# Build a mapping from DB ticker → exchange for yfinance lookups
+_ticker_exchange: dict[str, str | None] = {}
+for p in all_positions:
+    if p["ticker"] not in _ticker_exchange:
+        _ticker_exchange[p["ticker"]] = p["exchange"]
+
+tickers = list(_ticker_exchange.keys())
 ticker_info_cache: dict[str, dict] = {}
 for t in tickers:
     try:
-        ticker_info_cache[t] = get_ticker_info(t)
+        ticker_info_cache[t] = _cached_ticker_info(yfinance_ticker(t, _ticker_exchange.get(t)))
     except Exception:
         ticker_info_cache[t] = {"name": t, "sector": "N/A"}
 
@@ -136,6 +148,13 @@ selected_ticker = st.selectbox(
 )
 
 if selected_ticker:
+    # Find the exchange for this ticker from position data
+    _sel_exchange = next(
+        (p["exchange"] for p in all_positions if p["ticker"] == selected_ticker),
+        None,
+    )
+    _sel_yf = yfinance_ticker(selected_ticker, _sel_exchange)
+
     with st.expander(f"Details: {selected_ticker}", expanded=True):
         info = ticker_info_cache.get(selected_ticker, {})
 
@@ -154,7 +173,7 @@ if selected_ticker:
 
         with detail_col2:
             # 30-day mini chart (normalize ticker for yfinance)
-            hist = get_price_history(yfinance_ticker(selected_ticker), period="1mo", interval="1d", conn=conn)
+            hist = get_price_history(_sel_yf, period="1mo", interval="1d", conn=conn)
             if not hist.empty:
                 fig = px.line(
                     hist,

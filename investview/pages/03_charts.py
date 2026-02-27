@@ -13,6 +13,12 @@ from data.market_data import get_price_history, get_ticker_info
 from utils.formatting import fmt_currency, fmt_large_number, fmt_pct
 from config import logger
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_ticker_info(ticker: str) -> dict:
+    """Fetch ticker info with 1-hour Streamlit cache to avoid Yahoo rate limits."""
+    return get_ticker_info(ticker)
+
 conn = st.session_state.db_conn
 
 st.title("Price Charts")
@@ -23,9 +29,11 @@ st.title("Price Charts")
 watchlist = get_watchlist(conn)
 positions = get_positions(conn)
 suggestions = sorted(set(
-    yfinance_ticker(t) for t in
-    [w["ticker"] for w in watchlist] + [p["ticker"] for p in positions]
-    if is_equity_ticker(t)
+    yfinance_ticker(p["ticker"], p["exchange"]) for p in positions
+    if is_equity_ticker(p["ticker"])
+) | set(
+    yfinance_ticker(w["ticker"]) for w in watchlist
+    if is_equity_ticker(w["ticker"])
 ))
 
 col_input, col_period, col_type = st.columns([2, 2, 1])
@@ -233,7 +241,7 @@ if compare_list:
 # Key stats card
 # ---------------------------------------------------------------------------
 st.subheader(f"Key Stats — {ticker_input}")
-info = get_ticker_info(ticker_input)
+info = _cached_ticker_info(ticker_input)
 
 stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
 

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS positions (
     unrealized_pnl_pct REAL,
     asset_type TEXT NOT NULL DEFAULT 'stock'
         CHECK (asset_type IN ('stock', 'etf', 'option', 'bond', 'cash')),
+    exchange TEXT,
     last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

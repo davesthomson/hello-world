@@ -64,7 +64,13 @@ class IBKRAdapter(BrokerAdapter):
             raise ConnectionError("Not connected to IBKR. Call connect() first.")
 
     def get_positions(self) -> list[dict]:
-        """Fetch current positions from IBKR."""
+        """Fetch current positions from IBKR.
+
+        Returns position data (ticker, quantity, cost basis, exchange).
+        Current prices are not fetched here — use yfinance via
+        ``refresh_position_prices`` instead, which is faster and avoids
+        async event-loop issues in Streamlit threads.
+        """
         self._ensure_connected()
         positions = []
         for pos in self.ib.positions():
@@ -73,39 +79,16 @@ class IBKRAdapter(BrokerAdapter):
             avg_cost = pos.avgCost
             qty = pos.position
 
-            # Request market data for current price
-            current_price = None
-            market_value = None
-            unrealized_pnl = None
-            unrealized_pnl_pct = None
-            try:
-                self.ib.qualifyContracts(contract)
-                ticker = self.ib.reqMktData(contract, snapshot=True)
-                self.ib.sleep(2)  # allow time for snapshot
-                if ticker.last and ticker.last > 0:
-                    current_price = ticker.last
-                elif ticker.close and ticker.close > 0:
-                    current_price = ticker.close
-
-                if current_price and qty:
-                    market_value = current_price * qty
-                    cost_basis_total = avg_cost * qty
-                    unrealized_pnl = market_value - cost_basis_total
-                    if cost_basis_total != 0:
-                        unrealized_pnl_pct = (unrealized_pnl / abs(cost_basis_total)) * 100
-                self.ib.cancelMktData(contract)
-            except Exception as e:
-                logger.warning("Could not get market data for %s: %s", contract.symbol, e)
-
             positions.append({
                 "ticker": contract.symbol,
                 "quantity": float(qty),
                 "avg_cost_basis": float(avg_cost) if avg_cost else None,
-                "current_price": current_price,
-                "market_value": market_value,
-                "unrealized_pnl": unrealized_pnl,
-                "unrealized_pnl_pct": unrealized_pnl_pct,
+                "current_price": None,
+                "market_value": None,
+                "unrealized_pnl": None,
+                "unrealized_pnl_pct": None,
                 "asset_type": sec_type,
+                "exchange": contract.exchange or None,
             })
         logger.info("Fetched %d positions from IBKR", len(positions))
         return positions

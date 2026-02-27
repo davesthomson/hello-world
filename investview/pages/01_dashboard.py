@@ -6,11 +6,17 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 
-from db.database import get_accounts, get_positions, get_snapshots, refresh_position_prices
+from db.database import get_accounts, get_positions, get_snapshots, refresh_position_prices, yfinance_ticker
 from data.market_data import get_ticker_info, get_multiple_prices
 from data.macro_data import get_fed_funds_rate, get_treasury_yields, get_cpi
 from utils.formatting import fmt_currency, fmt_pct, pnl_color, pnl_arrow
 from config import logger
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_ticker_info(ticker: str) -> dict:
+    """Fetch ticker info with 1-hour Streamlit cache to avoid Yahoo rate limits."""
+    return get_ticker_info(ticker)
 
 conn = st.session_state.db_conn
 
@@ -104,12 +110,16 @@ st.subheader("Top Holdings")
 if all_positions:
     top = sorted(all_positions, key=lambda p: p["market_value"] or 0, reverse=True)[:10]
 
-    # Enrich with company names
-    tickers = list({p["ticker"] for p in top})
+    # Enrich with company names (cached to avoid Yahoo rate limits)
+    _top_exchange: dict[str, str | None] = {}
+    for p in top:
+        if p["ticker"] not in _top_exchange:
+            _top_exchange[p["ticker"]] = p["exchange"]
+    tickers = list(_top_exchange.keys())
     ticker_info: dict[str, dict] = {}
     for t in tickers:
         try:
-            ticker_info[t] = get_ticker_info(t)
+            ticker_info[t] = _cached_ticker_info(yfinance_ticker(t, _top_exchange.get(t)))
         except Exception:
             ticker_info[t] = {"name": t, "sector": "N/A"}
 
