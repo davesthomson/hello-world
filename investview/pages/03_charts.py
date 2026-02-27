@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
-from db.database import get_watchlist, get_positions, is_equity_ticker
+from db.database import get_watchlist, get_positions, is_equity_ticker, yfinance_ticker
 from data.market_data import get_price_history, get_ticker_info
 from utils.formatting import fmt_currency, fmt_large_number, fmt_pct
 from config import logger
@@ -23,7 +23,7 @@ st.title("Price Charts")
 watchlist = get_watchlist(conn)
 positions = get_positions(conn)
 suggestions = sorted(set(
-    t for t in
+    yfinance_ticker(t) for t in
     [w["ticker"] for w in watchlist] + [p["ticker"] for p in positions]
     if is_equity_ticker(t)
 ))
@@ -31,11 +31,11 @@ suggestions = sorted(set(
 col_input, col_period, col_type = st.columns([2, 2, 1])
 
 with col_input:
-    ticker_input = st.text_input(
+    ticker_input = yfinance_ticker(st.text_input(
         "Ticker",
         value=suggestions[0] if suggestions else "SPY",
         placeholder="Enter ticker symbol",
-    ).upper().strip()
+    ).upper().strip())
     if suggestions:
         st.caption(f"Suggestions: {', '.join(suggestions[:10])}")
 

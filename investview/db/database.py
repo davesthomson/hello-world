@@ -237,13 +237,25 @@ def get_watchlist(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM watchlist ORDER BY ticker").fetchall()
 
 
-# Regex: valid stock/ETF tickers are 1-5 uppercase letters, optionally with a dot (BRK.B)
-_TICKER_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
+# Equity tickers are letters only (possibly with a space, dot, or hyphen for
+# class shares like "BRK B", "BRK.B", "BRK-B").  CUSIPs and bond IDs always
+# contain digits (e.g. "196711TP0").  Reject anything with digits or longer
+# than 6 base characters.
+_TICKER_RE = re.compile(r"^[A-Z]{1,6}([. -][A-Z]{1,2})?$")
 
 
 def is_equity_ticker(ticker: str) -> bool:
     """Return True if *ticker* looks like a stock/ETF symbol (not a CUSIP or bond ID)."""
     return bool(_TICKER_RE.match(ticker))
+
+
+def yfinance_ticker(ticker: str) -> str:
+    """Convert an IBKR-style ticker to the yfinance format.
+
+    IBKR uses spaces for class shares (``PBR A``, ``BRK B``) while yfinance
+    expects hyphens (``PBR-A``, ``BRK-B``).
+    """
+    return ticker.replace(" ", "-")
 
 
 def refresh_position_prices(conn: sqlite3.Connection, account_id: int | None = None) -> int:
@@ -259,16 +271,25 @@ def refresh_position_prices(conn: sqlite3.Connection, account_id: int | None = N
         return 0
 
     # Collect unique equity tickers that yfinance can resolve
-    equity_tickers = sorted({p["ticker"] for p in positions if is_equity_ticker(p["ticker"])})
-    if not equity_tickers:
+    db_tickers = sorted({p["ticker"] for p in positions if is_equity_ticker(p["ticker"])})
+    if not db_tickers:
         return 0
 
-    prices = get_multiple_prices(equity_tickers)
+    # Map DB ticker → yfinance ticker (spaces → hyphens for class shares)
+    yf_map = {t: yfinance_ticker(t) for t in db_tickers}
+    yf_tickers = list(yf_map.values())
+
+    prices = get_multiple_prices(yf_tickers)
+
+    # Build reverse lookup: DB ticker → price
+    db_prices: dict[str, float | None] = {}
+    for db_t, yf_t in yf_map.items():
+        db_prices[db_t] = prices.get(yf_t)
 
     updated = 0
     for pos in positions:
         ticker = pos["ticker"]
-        price = prices.get(ticker)
+        price = db_prices.get(ticker)
         if price is None:
             continue
 

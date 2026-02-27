@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 
-from db.database import get_accounts, get_positions, refresh_position_prices
+from db.database import get_accounts, get_positions, refresh_position_prices, yfinance_ticker
 from data.market_data import get_ticker_info, get_price_history
 from utils.formatting import fmt_currency, fmt_pct
 from config import logger
@@ -153,8 +153,8 @@ if selected_ticker:
                 st.write(f"Dividend Yield: {info['dividend_yield'] * 100:.2f}%")
 
         with detail_col2:
-            # 30-day mini chart
-            hist = get_price_history(selected_ticker, period="1mo", interval="1d", conn=conn)
+            # 30-day mini chart (normalize ticker for yfinance)
+            hist = get_price_history(yfinance_ticker(selected_ticker), period="1mo", interval="1d", conn=conn)
             if not hist.empty:
                 fig = px.line(
                     hist,
