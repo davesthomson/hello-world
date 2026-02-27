@@ -1,5 +1,6 @@
 """SQLite database connection helper and migration runner."""
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -234,3 +235,64 @@ def remove_from_watchlist(conn: sqlite3.Connection, ticker: str) -> None:
 def get_watchlist(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all watchlist tickers."""
     return conn.execute("SELECT * FROM watchlist ORDER BY ticker").fetchall()
+
+
+# Regex: valid stock/ETF tickers are 1-5 uppercase letters, optionally with a dot (BRK.B)
+_TICKER_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
+
+
+def is_equity_ticker(ticker: str) -> bool:
+    """Return True if *ticker* looks like a stock/ETF symbol (not a CUSIP or bond ID)."""
+    return bool(_TICKER_RE.match(ticker))
+
+
+def refresh_position_prices(conn: sqlite3.Connection, account_id: int | None = None) -> int:
+    """Use yfinance to update current_price, market_value, and P&L for stored positions.
+
+    Only targets positions whose tickers look like equity/ETF symbols
+    (skips CUSIPs, bond identifiers, etc.).  Returns the number of positions updated.
+    """
+    from data.market_data import get_multiple_prices
+
+    positions = get_positions(conn, account_id=account_id)
+    if not positions:
+        return 0
+
+    # Collect unique equity tickers that yfinance can resolve
+    equity_tickers = sorted({p["ticker"] for p in positions if is_equity_ticker(p["ticker"])})
+    if not equity_tickers:
+        return 0
+
+    prices = get_multiple_prices(equity_tickers)
+
+    updated = 0
+    for pos in positions:
+        ticker = pos["ticker"]
+        price = prices.get(ticker)
+        if price is None:
+            continue
+
+        qty = pos["quantity"] or 0
+        avg_cost = pos["avg_cost_basis"]
+        market_value = price * qty
+        unrealized_pnl = None
+        unrealized_pnl_pct = None
+        if avg_cost and qty:
+            cost_basis_total = avg_cost * qty
+            unrealized_pnl = market_value - cost_basis_total
+            if cost_basis_total != 0:
+                unrealized_pnl_pct = (unrealized_pnl / abs(cost_basis_total)) * 100
+
+        conn.execute(
+            """UPDATE positions
+               SET current_price = ?, market_value = ?,
+                   unrealized_pnl = ?, unrealized_pnl_pct = ?,
+                   last_updated = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (price, market_value, unrealized_pnl, unrealized_pnl_pct, pos["id"]),
+        )
+        updated += 1
+
+    conn.commit()
+    logger.info("Refreshed prices for %d positions via yfinance.", updated)
+    return updated

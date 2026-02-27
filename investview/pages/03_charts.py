@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
-from db.database import get_watchlist, get_positions
+from db.database import get_watchlist, get_positions, is_equity_ticker
 from data.market_data import get_price_history, get_ticker_info
 from utils.formatting import fmt_currency, fmt_large_number, fmt_pct
 from config import logger
@@ -23,7 +23,9 @@ st.title("Price Charts")
 watchlist = get_watchlist(conn)
 positions = get_positions(conn)
 suggestions = sorted(set(
+    t for t in
     [w["ticker"] for w in watchlist] + [p["ticker"] for p in positions]
+    if is_equity_ticker(t)
 ))
 
 col_input, col_period, col_type = st.columns([2, 2, 1])

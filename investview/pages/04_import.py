@@ -12,6 +12,7 @@ from db.database import (
     get_positions,
     insert_account,
     insert_trades,
+    refresh_position_prices,
     upsert_positions,
     upsert_snapshot,
 )
@@ -66,19 +67,29 @@ with ibkr_col2:
                     positions = adapter.get_positions()
                     count = upsert_positions(conn, acct_id, positions)
 
-                    # Save snapshot
+                    # Fill in missing prices via yfinance
+                    refreshed = refresh_position_prices(conn, account_id=acct_id)
+                    if refreshed:
+                        logger.info("Enriched %d positions with yfinance prices.", refreshed)
+
+                    # Save snapshot (recompute from DB so yfinance prices are included)
                     summary = adapter.get_account_summary()
+                    acct_positions = get_positions(conn, account_id=acct_id)
+                    total_val = sum(p["market_value"] or 0 for p in acct_positions)
+
                     if summary:
                         upsert_snapshot(
                             conn,
                             acct_id,
                             date.today().isoformat(),
-                            summary.get("total_value", 0),
+                            total_val or summary.get("total_value", 0),
                             summary.get("cash_balance", 0),
                             summary.get("invested_value", 0),
                         )
+                    elif total_val:
+                        upsert_snapshot(conn, acct_id, date.today().isoformat(), total_val)
 
-                    st.success(f"Synced {count} positions from IBKR.")
+                    st.success(f"Synced {count} positions from IBKR ({refreshed} priced via yfinance).")
                 except Exception as e:
                     st.error(f"IBKR sync failed: {e}")
                     logger.error("IBKR position sync error: %s", e)

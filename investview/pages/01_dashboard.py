@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 
-from db.database import get_accounts, get_positions, get_snapshots
+from db.database import get_accounts, get_positions, get_snapshots, refresh_position_prices
 from data.market_data import get_ticker_info, get_multiple_prices
 from data.macro_data import get_fed_funds_rate, get_treasury_yields, get_cpi
 from utils.formatting import fmt_currency, fmt_pct, pnl_color, pnl_arrow
@@ -49,11 +49,21 @@ with st.sidebar:
 st.title("Portfolio Dashboard")
 
 accounts = get_accounts(conn)
-all_positions = get_positions(conn)
 
 if not accounts:
     st.info("No accounts found. Go to **Import & Sync** to add an account and import data.")
     st.stop()
+
+# Refresh prices button
+if st.button("Refresh Prices (yfinance)"):
+    with st.spinner("Fetching latest prices from yfinance..."):
+        updated = refresh_position_prices(conn)
+        if updated:
+            st.success(f"Updated prices for {updated} positions.")
+        else:
+            st.info("No equity positions to update.")
+
+all_positions = get_positions(conn)
 
 # ---------------------------------------------------------------------------
 # Header metrics

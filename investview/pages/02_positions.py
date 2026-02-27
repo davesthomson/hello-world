@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 
-from db.database import get_accounts, get_positions
+from db.database import get_accounts, get_positions, refresh_position_prices
 from data.market_data import get_ticker_info, get_price_history
 from utils.formatting import fmt_currency, fmt_pct
 from config import logger
@@ -14,6 +14,14 @@ from config import logger
 conn = st.session_state.db_conn
 
 st.title("Positions")
+
+if st.button("Refresh Prices (yfinance)"):
+    with st.spinner("Fetching latest prices from yfinance..."):
+        updated = refresh_position_prices(conn)
+        if updated:
+            st.success(f"Updated prices for {updated} positions.")
+        else:
+            st.info("No equity positions to update.")
 
 # ---------------------------------------------------------------------------
 # Filter bar
