@@ -6,17 +6,10 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 
-from db.database import get_accounts, get_positions, get_snapshots, refresh_position_prices, yfinance_ticker
-from data.market_data import get_ticker_info, get_multiple_prices
+from db.database import get_accounts, get_positions, get_snapshots, refresh_position_prices
 from data.macro_data import get_fed_funds_rate, get_treasury_yields, get_cpi
 from utils.formatting import fmt_currency, fmt_pct, pnl_color, pnl_arrow
 from config import logger
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _cached_ticker_info(ticker: str) -> dict:
-    """Fetch ticker info with 1-hour Streamlit cache to avoid Yahoo rate limits."""
-    return get_ticker_info(ticker)
 
 conn = st.session_state.db_conn
 
@@ -104,31 +97,16 @@ for i, acct in enumerate(accounts):
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Top holdings table
+# Top holdings table (uses DB data only — no Yahoo API calls on page load)
 # ---------------------------------------------------------------------------
 st.subheader("Top Holdings")
 if all_positions:
     top = sorted(all_positions, key=lambda p: p["market_value"] or 0, reverse=True)[:10]
 
-    # Enrich with company names (cached to avoid Yahoo rate limits)
-    _top_exchange: dict[str, str | None] = {}
-    for p in top:
-        if p["ticker"] not in _top_exchange:
-            _top_exchange[p["ticker"]] = p["exchange"]
-    tickers = list(_top_exchange.keys())
-    ticker_info: dict[str, dict] = {}
-    for t in tickers:
-        try:
-            ticker_info[t] = _cached_ticker_info(yfinance_ticker(t, _top_exchange.get(t)))
-        except Exception:
-            ticker_info[t] = {"name": t, "sector": "N/A"}
-
     rows = []
     for p in top:
-        info = ticker_info.get(p["ticker"], {})
         rows.append({
             "Ticker": p["ticker"],
-            "Name": info.get("name", p["ticker"]),
             "Shares": f"{p['quantity']:,.2f}",
             "Price": fmt_currency(p["current_price"]),
             "Market Value": fmt_currency(p["market_value"]),
@@ -141,7 +119,7 @@ else:
     st.info("No positions to display.")
 
 # ---------------------------------------------------------------------------
-# Allocation charts
+# Allocation charts (asset type from DB — no Yahoo calls needed)
 # ---------------------------------------------------------------------------
 if all_positions:
     chart_col1, chart_col2 = st.columns(2)
@@ -160,25 +138,6 @@ if all_positions:
                 values=list(asset_data.values()),
                 hole=0.4,
                 title="By Asset Type",
-            )
-            fig.update_traces(textposition="inside", textinfo="percent+label")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # Sector allocation donut
-    with chart_col2:
-        st.subheader("Sector Allocation")
-        sector_data: dict[str, float] = {}
-        for p in all_positions:
-            info = ticker_info.get(p["ticker"], {})
-            sector = info.get("sector", "N/A")
-            sector_data[sector] = sector_data.get(sector, 0) + (p["market_value"] or 0)
-
-        if sector_data:
-            fig = px.pie(
-                names=list(sector_data.keys()),
-                values=list(sector_data.values()),
-                hole=0.4,
-                title="By Sector",
             )
             fig.update_traces(textposition="inside", textinfo="percent+label")
             st.plotly_chart(fig, use_container_width=True)

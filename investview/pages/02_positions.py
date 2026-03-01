@@ -69,28 +69,14 @@ if not all_positions:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Build display table
+# Build display table (uses DB data only — no Yahoo API calls)
 # ---------------------------------------------------------------------------
-# Build a mapping from DB ticker → exchange for yfinance lookups
-_ticker_exchange: dict[str, str | None] = {}
-for p in all_positions:
-    if p["ticker"] not in _ticker_exchange:
-        _ticker_exchange[p["ticker"]] = p["exchange"]
-
-tickers = list(_ticker_exchange.keys())
-ticker_info_cache: dict[str, dict] = {}
-for t in tickers:
-    try:
-        ticker_info_cache[t] = _cached_ticker_info(yfinance_ticker(t, _ticker_exchange.get(t)))
-    except Exception:
-        ticker_info_cache[t] = {"name": t, "sector": "N/A"}
+tickers = list({p["ticker"] for p in all_positions})
 
 rows = []
 for p in all_positions:
-    info = ticker_info_cache.get(p["ticker"], {})
     rows.append({
         "Ticker": p["ticker"],
-        "Name": info.get("name", p["ticker"]),
         "Account": p["account_name"],
         "Type": p["asset_type"],
         "Shares": p["quantity"],
@@ -99,7 +85,6 @@ for p in all_positions:
         "Market Value": p["market_value"],
         "P&L ($)": p["unrealized_pnl"],
         "P&L (%)": p["unrealized_pnl_pct"],
-        "Sector": info.get("sector", "N/A"),
     })
 
 df = pd.DataFrame(rows)
@@ -107,7 +92,6 @@ df = pd.DataFrame(rows)
 # Totals row
 totals = {
     "Ticker": "TOTAL",
-    "Name": "",
     "Account": "",
     "Type": "",
     "Shares": "",
@@ -116,7 +100,6 @@ totals = {
     "Market Value": df["Market Value"].sum(),
     "P&L ($)": df["P&L ($)"].sum(),
     "P&L (%)": "",
-    "Sector": "",
 }
 df_with_totals = pd.concat([df, pd.DataFrame([totals])], ignore_index=True)
 
@@ -136,7 +119,7 @@ display_df["Shares"] = display_df["Shares"].apply(
 st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
-# Position detail expander
+# Position detail expander (lazy — only fetches Yahoo data for selected ticker)
 # ---------------------------------------------------------------------------
 st.subheader("Position Details")
 st.caption("Select a ticker below to see detailed info and a 30-day price chart.")
@@ -156,7 +139,7 @@ if selected_ticker:
     _sel_yf = yfinance_ticker(selected_ticker, _sel_exchange)
 
     with st.expander(f"Details: {selected_ticker}", expanded=True):
-        info = ticker_info_cache.get(selected_ticker, {})
+        info = _cached_ticker_info(_sel_yf)
 
         detail_col1, detail_col2 = st.columns(2)
         with detail_col1:
@@ -172,7 +155,7 @@ if selected_ticker:
                 st.write(f"Dividend Yield: {info['dividend_yield'] * 100:.2f}%")
 
         with detail_col2:
-            # 30-day mini chart (normalize ticker for yfinance)
+            # 30-day mini chart
             hist = get_price_history(_sel_yf, period="1mo", interval="1d", conn=conn)
             if not hist.empty:
                 fig = px.line(

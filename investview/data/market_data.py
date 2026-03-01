@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -93,34 +94,51 @@ def get_ticker_info(ticker: str) -> dict:
         return {"name": ticker, "sector": "N/A"}
 
 
-def get_multiple_prices(tickers: list[str]) -> dict[str, float | None]:
-    """Get current prices for multiple tickers at once."""
-    prices: dict[str, float | None] = {}
-    try:
-        import yfinance as yf
-        data = yf.download(tickers, period="1d", progress=False, threads=True)
-        if data.empty:
-            return {t: None for t in tickers}
+def get_multiple_prices(tickers: list[str], max_retries: int = 3) -> dict[str, float | None]:
+    """Get current prices for multiple tickers at once.
 
-        # yf.download returns MultiIndex columns for multiple tickers
-        if len(tickers) == 1:
-            close = data.get("Close")
-            if close is not None and not close.empty:
-                prices[tickers[0]] = float(close.iloc[-1])
+    Retries with exponential backoff on failure (e.g. Yahoo 429 rate limits).
+    """
+    import yfinance as yf
+
+    prices: dict[str, float | None] = {}
+
+    for attempt in range(max_retries):
+        try:
+            data = yf.download(tickers, period="5d", progress=False, threads=True)
+            if data.empty:
+                if attempt < max_retries - 1:
+                    wait = 2 ** (attempt + 1)
+                    logger.info("yf.download returned empty, retrying in %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
+                    time.sleep(wait)
+                    continue
+                return {t: None for t in tickers}
+
+            # yf.download returns MultiIndex columns for multiple tickers
+            if len(tickers) == 1:
+                close = data.get("Close")
+                if close is not None and not close.empty:
+                    prices[tickers[0]] = float(close.iloc[-1])
+                else:
+                    prices[tickers[0]] = None
             else:
-                prices[tickers[0]] = None
-        else:
-            close_data = data.get("Close")
-            if close_data is not None:
-                for t in tickers:
-                    try:
-                        val = close_data[t].iloc[-1]
-                        prices[t] = float(val) if pd.notna(val) else None
-                    except (KeyError, IndexError):
-                        prices[t] = None
-    except Exception as e:
-        logger.warning("Failed to get multiple prices: %s", e)
-        prices = {t: None for t in tickers}
+                close_data = data.get("Close")
+                if close_data is not None:
+                    for t in tickers:
+                        try:
+                            val = close_data[t].dropna()
+                            prices[t] = float(val.iloc[-1]) if not val.empty else None
+                        except (KeyError, IndexError):
+                            prices[t] = None
+            break  # success
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                logger.warning("yf.download failed (attempt %d/%d), retrying in %ds: %s", attempt + 1, max_retries, wait, e)
+                time.sleep(wait)
+            else:
+                logger.warning("yf.download failed after %d attempts: %s", max_retries, e)
+                prices = {t: None for t in tickers}
 
     # Fill in any missing
     for t in tickers:
